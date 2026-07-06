@@ -24,9 +24,9 @@
 12. [Protocol Selection Guidance: SAML vs. OAuth2/OIDC](#12-protocol-selection-guidance-saml-vs-oauth2oidc)
 13. [Vendor-Agnostic Note: Open-Source vs. Proprietary IdP](#13-vendor-agnostic-note-open-source-vs-proprietary-idp)
 14. [Machine Identity & Service-to-Service Security](#14-machine-identity--service-to-service-security)
-15. Standards & References *(coming next)*
-16. Extensions Considered *(coming next)*
-17. About This Document *(coming next)*
+15. [Standards & References](#15-standards--references)
+16. [Extensions Considered](#16-extensions-considered)
+17. [About This Document](#17-about-this-document)
 
 ---
 
@@ -592,5 +592,50 @@ graph TD
 - Where a service can't yet participate in the mesh (e.g., a legacy product mid-migration per §5), it falls back to OAuth2 Client Credentials against Keycloak directly, with the secret sourced from Vault rather than hardcoded — a deliberately lower bar than full SPIFFE/mTLS, chosen because it's achievable without first re-platforming the legacy service.
 
 This mirrors the same high-security-API mindset behind the [`fapi2`](https://github.com/guymoyo/fapi2) demo — FAPI profiles exist specifically because "just use OAuth2" isn't sufficient for banking-grade API security without additional constraints (sender-constrained tokens, strict client authentication), and that same instinct — don't trust a bearer token alone when the stakes are high — is what motivates mTLS/SPIFFE for service-to-service traffic here rather than bearer tokens alone.
+
+---
+
+## 15. Standards & References
+
+Every design choice above traces back to a spec, not a vendor's marketing page. Implementation should always be checked against the current version of the actual standard, not against this summary.
+
+| Standard | Reference | Relevance here |
+|---|---|---|
+| OAuth 2.0 Authorization Framework | [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) | The base protocol underlying every flow in §12 |
+| OAuth 2.0 Bearer Token Usage | [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) | How access tokens are presented to the Gateway (§9) |
+| PKCE (Proof Key for Code Exchange) | [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) | Mandatory for SPA/mobile clients (§12) — removes reliance on a client secret in a public client |
+| JWT Profile for OAuth 2.0 Access Tokens | [RFC 9068](https://datatracker.ietf.org/doc/html/rfc9068) | Structured, interoperable access-token format for local JWT validation (§9) |
+| Token Exchange | [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693) | Relevant for delegation/impersonation scenarios (e.g., a service acting on behalf of a partner) |
+| Demonstrating Proof of Possession (DPoP) | [RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449) | Sender-constrained tokens — flagged as an extension in §16, not yet in the base design |
+| OpenID Connect Core 1.0 | [openid.net/specs/openid-connect-core-1_0.html](https://openid.net/specs/openid-connect-core-1_0.html) | Identity layer on top of OAuth2 — the `id_token` and userinfo semantics used throughout §4a, §12 |
+| SAML 2.0 Core | [OASIS SAML 2.0](https://docs.oasis-open.org/security/saml/v2.0/saml-core-2.0-os.pdf) | Legacy/enterprise-federation flow in §12 |
+| SCIM (System for Cross-domain Identity Management) | [RFC 7643](https://datatracker.ietf.org/doc/html/rfc7643) / [RFC 7644](https://datatracker.ietf.org/doc/html/rfc7644) | Lifecycle provisioning — flagged as an extension in §16 |
+| WebAuthn Level 2 | [W3C WebAuthn](https://www.w3.org/TR/webauthn-2/) | Phishing-resistant MFA factor in §11 |
+| SPIFFE / SPIRE | [spiffe.io](https://spiffe.io/) | Workload identity model in §14 |
+| Open Policy Agent / Rego | [openpolicyagent.org](https://www.openpolicyagent.org/) | Policy engine and language used in §10 |
+
+## 16. Extensions Considered
+
+Deliberately explicit about what a real production rollout would still need beyond what's diagrammed above. Listing these isn't a weakness in the design — pretending a reference architecture is a complete production system would be the actual weakness.
+
+| Extension | Why it matters | Where it would attach |
+|---|---|---|
+| **Session management & Single Logout (SLO)** | A user logging out of one product should be able to log out everywhere, via OIDC back-channel logout, not just clear one local session | §4a, §8 |
+| **Sender-constrained tokens (DPoP, RFC 9449, or mTLS-bound tokens)** | A stolen bearer token is currently usable by whoever holds it; sender-constraining ties a token to the specific client that requested it | §9, extends §14's mTLS story to human-facing tokens too |
+| **JWKS rotation strategy** | Signing keys need a defined rotation cadence and overlap window so in-flight tokens don't fail validation mid-rotation | §8, §9 |
+| **Refresh token rotation + reuse detection** | Detects a stolen refresh token being replayed by an attacker after the legitimate client has already rotated it | §4a |
+| **IdP-side brute-force / credential-stuffing protection** | Rate limiting and account lockout policy at the IdP itself, not just at the application layer | §8 |
+| **Explicit compliance control mapping (SOC 2, ISO 27001, HIPAA, PCI-DSS, NIST)** | Named directly in typical staff-IAM job requirements — governance needs a concrete control-to-capability mapping table, not just an assertion that the platform is "compliant" | Would be its own section, built once real compliance scope is known |
+| **Audit logging / SIEM integration** | Keycloak's event listener SPI feeding a central SIEM, so "who did what, when" is queryable across the whole platform, not per-product | §4b, §10 |
+| **Break-glass emergency admin access** | A documented, audited, time-boxed procedure for emergency access when the normal IdP-mediated path is itself unavailable | §8 (ties to the clustering/availability story) |
+| **Data residency / multi-region** | Where user data and signing keys physically live, for tenants with regional data-residency requirements | §6 |
+| **Disaster recovery for the identity plane itself** | An IdP outage is a total-platform outage — this needs its own DR narrative distinct from the clustering benchmark in §8, which covers node failure, not regional/database-level disaster | §8 |
+| **Cost/ROI framing for a business audience** | "Why centralize" needs a business case (reduced per-product auth maintenance, faster time-to-market for new product integrations, lower audit cost) alongside the technical case, since this kind of platform investment gets budget-reviewed, not just architecture-reviewed | Ties back to §1, §2 |
+
+## 17. About This Document
+
+I'm a senior software engineer with 15+ years building distributed, event-driven systems in regulated financial-services and payments environments, with hands-on identity and access management depth: architecting dual authentication models (legacy + modern SSO coexistence), designing golden-source identity platforms with event-driven deduplication, and defining application-security and identity patterns (IAM, OAuth2/OIDC, API gateways) across banking and fintech clients. I hold a TOGAF Enterprise Architecture Practitioner certification and a Certified Ethical Hacker (CEH) certification, and I base implementation decisions on the underlying specs (OAuth2/OIDC/SAML IETF and OASIS standards) rather than a specific vendor's documentation alone.
+
+**Disclaimer:** this document is a reference architecture written to demonstrate how I think about centralized identity platform design. Diagrams, the illustrative benchmark table in §8, and every other figure in this document are estimates for illustration, not measured production data from any real system. This is not based on, and does not disclose, any current or former employer's actual architecture, infrastructure, or confidential information.
 
 ---
