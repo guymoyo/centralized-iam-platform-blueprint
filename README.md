@@ -14,6 +14,7 @@
    - [4b. Authorization & Service Enforcement Flow](#4b-authorization--service-enforcement-flow--what-an-authenticated-identity-can-actually-do)
    - [4c. Alternative Enforcement Pattern: Nginx + Auth Proxy](#4c-alternative-enforcement-pattern-nginx--auth-proxy)
 5. [Transitional / Intermediate Architecture](#5-transitional--intermediate-architecture)
+   - [5a. User Migration Strategy](#5a-user-migration-strategy)
 6. Organization → Tenant Model *(coming next)*
 7. Identity Classes & RBAC Design *(coming next)*
 8. SSO Design: Keycloak Clustering *(coming next)*
@@ -102,7 +103,7 @@ A quick map from capability asked-for to where it's addressed in this document.
 | Authentication, authorization, identity governance | §4, §7, §10 |
 | Serves customers, employees, partners, APIs, machine identities | §4, §6, §7 |
 | Platform architecture & technical direction | §4, §5 |
-| Drive adoption / migration across engineering teams | §5, §16 |
+| Drive adoption / migration across engineering teams | §5, §5a, §16 |
 | RBAC, ABAC, delegated administration | §7, §10 |
 | Multi-tenant environments | §6 |
 | Governance & regulatory/compliance requirements | §16 |
@@ -265,6 +266,23 @@ graph TD
 3. For legacy SAML products, the broker acts as a SAML Service Provider *to* the legacy IdP during transition, and becomes the actual IdP once the product is migrated to native OIDC.
 4. For legacy Basic Auth / API-key products, introduce a credential-vault bridge (Vault-issued, rotated credentials matching the legacy scheme) as a stop-gap while the product team implements OIDC support.
 5. Retire each legacy federation link as its product completes migration — the broker becomes the sole IdP once the last product cuts over.
+
+### 5a. User Migration Strategy
+
+Standing up the broker solves *system* migration. It doesn't move a single actual user identity. That's a separate problem with its own risks — mainly, you cannot recover a plaintext password from a legacy hash, so the migration approach has to be chosen per legacy source without ever forcing a mass password reset if it's avoidable (a mass reset is itself a phishing/support-load risk, not just a UX inconvenience).
+
+| Legacy source | Approach | Why |
+|---|---|---|
+| **LDAP / Active Directory** | Keycloak's native **User Federation** provider — reads (and optionally writes) directly against the existing directory. No user migration event at all; Keycloak becomes a façade in front of LDAP from day one. | Zero migration risk. LDAP stays the source of truth until (if ever) you choose to import and decommission it later, on its own timeline. |
+| **Per-product database with password hashes (bcrypt/scrypt/PBKDF2/etc.)** | **Lazy migration on login**: import the user record (email, profile attributes, group/role claims) with the *legacy* hash and algorithm tagged against it. On first login, Keycloak (via a custom credential provider) verifies against the legacy algorithm, and only on success re-hashes the password under Keycloak's own scheme and discards the legacy hash. | Never asks users to reset a password; the migration is invisible to them and completes gradually as people actually log in. Accounts that never log in again simply never get re-hashed — a known, accepted trade-off, not a gap to hide. |
+| **Email-only / magic-link / social-login products (no real password ever existed)** | Pre-provision the Keycloak user with the verified email and no credential set; route first login through Keycloak's own email-OTP or magic-link authenticator (or federate straight to the same social IdP the product used, e.g. Google) rather than inventing a password requirement that never existed for that product. | Matches the actual security posture the user already agreed to; introducing a password here would be a regression, not an upgrade. |
+
+**Identity deduplication and reconciliation:** the same person is frequently a "customer" in Product A's database and a separately-created "customer" in Product B's database, with no shared key beyond, usually, an email address that may or may not match exactly (case, aliasing, typos). This is not a hypothetical problem for me — it's structurally the same problem I solved with a golden-source identity platform at a previous employer: a central repository as the authoritative identity source, with a dedicated event pipeline handling unique-ID generation, deduplication, and merge/split events as records from different systems get reconciled into one identity. The same pattern applies here: a migration reconciliation pass (batch or event-driven) that matches candidate records across legacy stores, flags high-confidence auto-merges vs. low-confidence records that need manual review, and emits one canonical Keycloak user per resolved identity rather than one per legacy source.
+
+**Rollback and safety:**
+- Keep the legacy user store **read-only but intact** for a defined window after cutover (not deleted) — if a migrated credential path has an edge case, the legacy system is still the ground truth to reconcile against.
+- Migrate in **cohorts** (e.g., by product, by tenant, or by a low-risk internal-users-first wave) rather than a big-bang cutover, mirroring the product-migration sequencing above.
+- Communicate MFA re-enrollment clearly and in advance — MFA state (registered authenticator apps, phone numbers) generally cannot be migrated automatically and is the most common source of user-facing friction in an IdP consolidation.
 
 ---
 
