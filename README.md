@@ -121,6 +121,13 @@ graph TD
     Partner((Partner))
     APIConsumer((3rd-Party API Consumer))
 
+    subgraph Clients["Client Applications (per product)"]
+        WebA["Product A\nWeb App / SPA"]
+        MobileB["Product B\nMobile App"]
+        PartnerPortal["Partner Portal\n(Web App)"]
+        AdminUI["Internal Admin UI"]
+    end
+
     subgraph IdentityPlatform["Centralized Identity Platform"]
         IdP["Keycloak Cluster\n(Identity Provider)"]
         Gateway["API Gateway"]
@@ -135,12 +142,27 @@ graph TD
         SvcC["Product C Service"]
     end
 
-    Customer -->|OIDC Auth Code + PKCE| IdP
-    Employee -->|OIDC + step-up MFA| IdP
-    Partner -->|OIDC / SAML federation| IdP
-    APIConsumer -->|Client Credentials| IdP
+    Customer --> WebA
+    Customer --> MobileB
+    Partner --> PartnerPortal
+    Employee --> AdminUI
+    APIConsumer -.no browser, direct token request.-> IdP
 
-    IdP --> Gateway
+    WebA -.OIDC redirect, Auth Code + PKCE.-> IdP
+    MobileB -.OIDC redirect, Auth Code + PKCE.-> IdP
+    PartnerPortal -.OIDC / SAML federation.-> IdP
+    AdminUI -.OIDC + step-up MFA.-> IdP
+    IdP -.tokens back to client.-> WebA
+    IdP -.tokens back to client.-> MobileB
+    IdP -.tokens back to client.-> PartnerPortal
+    IdP -.tokens back to client.-> AdminUI
+
+    WebA -->|Bearer access token| Gateway
+    MobileB -->|Bearer access token| Gateway
+    PartnerPortal -->|Bearer access token| Gateway
+    AdminUI -->|Bearer access token| Gateway
+    APIConsumer -->|Client Credentials token| Gateway
+
     Gateway --> Policy
     Policy -->|allow/deny + scopes| Gateway
     Gateway --> SvcA
@@ -153,6 +175,8 @@ graph TD
     Vault -.client secrets / mTLS certs.-> SPIRE
     Vault -.-> IdP
 ```
+
+**Where the frontend sits, explicitly:** each product's client application (web SPA, mobile app, partner portal, internal admin UI) is itself an OIDC client. It never talks to the identity provider on the user's behalf silently — the user is redirected to the IdP to authenticate (Authorization Code + PKCE for browser/mobile clients, so the client never handles raw credentials), gets redirected back with an authorization code, and the client exchanges that for tokens. From then on, the client attaches the access token as a Bearer token on every call to the API Gateway. The gateway — not the frontend — is the enforcement boundary; a compromised or outdated frontend build can't bypass authorization because it never had the authority to grant itself access in the first place, only to carry a token the IdP issued. §9 and §12 walk through this exact sequence in detail.
 
 **Key properties of the target state:**
 - **One identity, every product.** A customer, employee, or partner authenticates once against the central IdP and gets scoped access across whichever products their role/tenant grants.
