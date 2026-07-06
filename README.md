@@ -40,7 +40,7 @@ This document is a reference architecture for solving that problem: a **centrali
 
 The architecture is deliberately **vendor-agnostic**: the concrete diagrams in this document use **Keycloak** as the open-source reference implementation, but the same design applies equally to a proprietary identity provider such as **Okta**, **Auth0**, **Ping Identity**, or **Microsoft Entra ID** — the IdP is a replaceable component behind a stable set of interfaces (OIDC/OAuth2/SAML), not the architecture itself.
 
-**How to read this document:** Section 2 shows the fragmented starting point most acquisition-heavy portfolios share. Section 3 is a traceability table if you want to jump straight to a specific capability. Sections 4-5 lay out the target state and the transitional path to get there. Sections 6-14 go deep on each major capability (multi-tenancy, RBAC, SSO, API security, delegated admin, MFA, protocol choice, machine identity). Section 16 is deliberately explicit about what a production rollout would still need beyond what's diagrammed here — I'd rather show you where I drew the line than pretend the diagrams are the whole system.
+**How to read this document:** Section 2 shows the fragmented starting point most acquisition-heavy portfolios share. Section 3 is a traceability table if you want to jump straight to a specific capability. Sections 4-5 lay out the target state and the transitional path to get there. Sections 6-14 go deep on each major capability (multi-tenancy, RBAC, SSO, API security, delegated admin, MFA, protocol choice, machine identity). Section 16 is deliberately explicit about what a production rollout would still need beyond what's diagrammed here.
 
 ## 2. Current State (As-Is): Fragmented Per-Product Identity
 
@@ -87,6 +87,7 @@ graph TD
 - Every new product acquisition adds another bespoke auth integration instead of plugging into a shared foundation.
 - Security incident response (e.g., "revoke this user's access everywhere, now") is a manual, per-product fire drill instead of one action.
 - Compliance evidence (SOC 2, ISO 27001, access reviews) has to be assembled per product rather than generated once from a central system.
+- Without a unified view of who holds what access across the whole portfolio, **toxic combinations of access rights** (e.g., a user who can both administer a product and approve changes to it in another — a segregation-of-duties violation) are effectively invisible until an audit or an incident surfaces them.
 
 ## 3. Requirements Traceability
 
