@@ -101,7 +101,7 @@ A quick map from capability asked-for to where it's addressed in this document.
 |---|---|
 | Centralized identity foundation across multiple products/business domains | §4, §5 |
 | Authentication, authorization, identity governance | §4, §7, §10 |
-| Serves customers, employees, partners, APIs, machine identities | §4, §6, §7 |
+| Serves customers, employees, partners, APIs, machine identities | §4, §6, §7, §14 |
 | Platform architecture & technical direction | §4, §5 |
 | Drive adoption / migration across engineering teams | §5, §5a, §16 |
 | RBAC, ABAC, delegated administration | §7, §10 |
@@ -469,6 +469,8 @@ allow {
 
 The API Gateway (§9) calls OPA as part of its enforcement step — not instead of the coarser RBAC role check, but layered after it, for the fine-grained/delegated cases RBAC alone can't express.
 
+**OPA/Rego isn't the only option here** — AWS's **Cedar** policy language solves the same problem (readable, analyzable authorization policy, evaluated at request time) and is the natural choice if the platform is AWS-native end to end (e.g., consuming it via Amazon Verified Permissions rather than self-hosting OPA). The GitOps review discipline above applies identically either way — the policy engine is a replaceable component behind this workflow, the same way §13 treats the IdP itself as replaceable.
+
 ## 11. MFA Approach
 
 | Factor | Where it fits | Notes |
@@ -559,7 +561,9 @@ Every diagram in this document uses Keycloak as the concrete implementation beca
 | Compliance certifications inherited | You inherit only what your own hosting environment provides | Vendor typically brings its own SOC 2/ISO 27001 attestation, which can simplify your own audit story |
 | Customization depth | Full control over authentication flows (SPIs) | Usually more constrained to vendor-supported extension points |
 
-I have direct production experience on both sides of this table: architecting a dual authentication model against **Okta** as the SSO provider for a regulated financial-services point-of-sale platform, and separately building a demo integrating **Keycloak** with a FAPI (Financial-grade API) profile — [`fapi2`](https://github.com/guymoyo/fapi2) — to explore high-security OAuth2/OIDC flows for banking-grade APIs. The [`spring-angular-okta`](https://github.com/guymoyo/spring-angular-okta) repo is a smaller, full-stack demo of the Okta/OIDC integration pattern specifically.
+**Keycloak isn't the only open-source option either** — **Zitadel** and **Authentik** are newer open-source IdPs solving the same problem with different operational trade-offs (Zitadel is Go-based and cloud-native by design; Authentik leans toward a simpler self-hosted footprint). The choice among open-source IdPs, or between open-source and proprietary, is a build-vs-buy and operational-fit decision — it doesn't change anything else in this document, since every diagram is expressed in terms of OIDC/OAuth2/SAML interfaces any of them implement.
+
+I have direct production experience on both sides of the open-source/proprietary line: architecting a dual authentication model against **Okta** as the SSO provider for a regulated financial-services point-of-sale platform, and separately building a demo integrating **Keycloak** with a FAPI (Financial-grade API) profile — [`fapi2`](https://github.com/guymoyo/fapi2) — to explore high-security OAuth2/OIDC flows for banking-grade APIs. The [`spring-angular-okta`](https://github.com/guymoyo/spring-angular-okta) repo is a smaller, full-stack demo of the Okta/OIDC integration pattern specifically.
 
 ## 14. Machine Identity & Service-to-Service Security
 
