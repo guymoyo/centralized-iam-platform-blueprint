@@ -288,35 +288,35 @@ Standing up the broker solves *system* migration. It doesn't move a single actua
 
 ## 6. Organization → Tenant Model
 
-Two levels of grouping, not one. An **Organization** is the customer entity that signed a contract — a company. A **Tenant** is an isolated slice of the platform that org's users actually operate in. Most orgs have exactly one tenant; larger enterprise customers may run several (e.g., separate tenants per business unit, region, or environment).
+This is a **B2B2C** platform: the platform's direct customer is a company, and that company's own employees/customers are the actual end users. Keycloak has a purpose-built concept for exactly this shape: **Organizations**. An Organization *is* the tenant — a company, with its own member users, its own domain(s) for identity-first login, and optionally its own linked identity provider (so the tenant's employees can federate in via their corporate IdP) — all living inside a **single realm**, not a dedicated one per tenant.
 
 ```mermaid
 graph TD
-    Org["Organization\n(e.g. Acme Corp)"]
-    TenantA["Tenant: acme-prod"]
-    TenantB["Tenant: acme-eu"]
-    RealmShared["Shared Realm\n(tenant = claim/attribute)"]
-    RealmDedicated["Dedicated Realm\n(large/regulated tenant)"]
+    Realm["Single Realm\n(the platform)"]
+    OrgA["Organization: Acme Corp\n(domain: acme.com)"]
+    OrgB["Organization: Globex Inc\n(domain: globex.com)"]
+    UserA1["User: alice@acme.com"]
+    UserA2["User: bob@acme.com"]
+    UserB1["User: carol@globex.com"]
+    IdPLinkA["Linked IdP: Acme's Azure AD\n(optional, org-specific)"]
     ClientA["Client: Product A"]
     ClientB["Client: Product B"]
 
-    Org --> TenantA
-    Org --> TenantB
-    TenantA -->|small/medium tenant| RealmShared
-    TenantB -->|large or data-residency-sensitive tenant| RealmDedicated
-    RealmShared --> ClientA
-    RealmShared --> ClientB
-    RealmDedicated --> ClientA
+    Realm --> OrgA
+    Realm --> OrgB
+    OrgA --> UserA1
+    OrgA --> UserA2
+    OrgB --> UserB1
+    OrgA -.federates via.-> IdPLinkA
+    Realm --> ClientA
+    Realm --> ClientB
 ```
 
-**Two supported patterns, chosen per-tenant rather than globally:**
+**Why not a realm per tenant:** this was my first instinct too, and it's the wrong default. Realms in Keycloak are a heavyweight administrative boundary — each one has its own admin console entry, its own caching, its own backup/restore unit, its own keys to manage — and that overhead doesn't scale gracefully to hundreds or thousands of tenants the way it needs to for a multi-product SaaS onboarding new customers regularly. Keycloak's own Organizations feature exists specifically to give B2B2C multi-tenancy *within* one realm: tenant-scoped membership, tenant-scoped IdP federation, and tenant-scoped invitations, without paying the per-realm operational cost for every single customer.
 
-| Pattern | When to use | Trade-off |
-|---|---|---|
-| **Shared realm, tenant as a claim/attribute** | The default for the vast majority of tenants | Lower operational overhead (one realm to run), but tenant isolation is enforced in application/policy logic, not by the IdP boundary itself — a bug in that logic is a cross-tenant leak |
-| **Dedicated realm per tenant** | Large enterprise customers, or tenants with contractual/regulatory data-residency requirements | Strong isolation at the IdP level (separate user pools, separate signing keys, independently revocable), at the cost of more realms to operate and provision per new customer |
+**Where a dedicated realm still earns its keep:** genuinely rare cases — a regulatory requirement for fully separate identity infrastructure (not just separate data), or a tenant large enough that it is, in practice, treated as its own product line rather than a customer. Reached for as the exception, not the default scaling pattern.
 
-**Delegated administration boundary:** an "Org Admin" role is scoped so it can only manage users, groups, and role assignments *within its own organization's tenant(s)* — never across organizations. This is enforced two ways depending on the pattern above: dedicated realms get this for free (an org admin in Keycloak is scoped to their own realm), while the shared-realm pattern needs an explicit policy layer (§10) checking the tenant claim on every admin action, since Keycloak's own admin console doesn't natively scope by an arbitrary attribute.
+**Delegated administration boundary:** Keycloak's fine-grained admin permissions let an "Org Admin" role be scoped to manage only members, invitations, and IdP links *within their own Organization* — natively, since that scoping is what the Organizations feature is for. The cross-cutting policy layer in §10 (OPA) is still needed for finer distinctions the Organizations model doesn't natively express — e.g., "this partner can see this one dataset within this org" — but the basic org-admin boundary doesn't need to be reinvented in application logic.
 
 ## 7. Identity Classes & RBAC Design
 
@@ -559,7 +559,7 @@ Every diagram in this document uses Keycloak as the concrete implementation beca
 | Compliance certifications inherited | You inherit only what your own hosting environment provides | Vendor typically brings its own SOC 2/ISO 27001 attestation, which can simplify your own audit story |
 | Customization depth | Full control over authentication flows (SPIs) | Usually more constrained to vendor-supported extension points |
 
-I have direct production experience on both sides of this table: architecting a dual authentication model against **Okta** as the SSO provider for a regulated financial-services point-of-sale platform, and separately building a demo integrating **Keycloak** with a FAPI (Financial-grade API) profile — [`fapi2`](https://github.com/guymoyo/fapi2) — to explore high-security OAuth2/OIDC flows for banking-grade APIs. The [`spring-angular-okta`](https://github.com/guymoyo/spring-angular-okta) repo is a smaller, full-stack demo of the Okta/OIDC integration pattern specifically. Neither repo is a Kaseya-specific artifact — they're general demonstrations of the same protocol depth this document argues for.
+I have direct production experience on both sides of this table: architecting a dual authentication model against **Okta** as the SSO provider for a regulated financial-services point-of-sale platform, and separately building a demo integrating **Keycloak** with a FAPI (Financial-grade API) profile — [`fapi2`](https://github.com/guymoyo/fapi2) — to explore high-security OAuth2/OIDC flows for banking-grade APIs. The [`spring-angular-okta`](https://github.com/guymoyo/spring-angular-okta) repo is a smaller, full-stack demo of the Okta/OIDC integration pattern specifically.
 
 ## 14. Machine Identity & Service-to-Service Security
 
@@ -579,8 +579,8 @@ graph TD
 
     SPIRE_Server -->|attests node identity| SPIRE_Agent_A
     SPIRE_Server -->|attests node identity| SPIRE_Agent_B
-    SPIRE_Agent_A -->|issues SVID\n(short-lived X.509)| SvcA
-    SPIRE_Agent_B -->|issues SVID\n(short-lived X.509)| SvcB
+    SPIRE_Agent_A -->|issues short-lived X.509 SVID| SvcA
+    SPIRE_Agent_B -->|issues short-lived X.509 SVID| SvcB
     SvcA <-->|mTLS, mutual SVID validation| SvcB
     Vault -.dynamic secrets, cert authority.-> SPIRE_Server
     Vault -.client secrets for OAuth2 client-credentials flows.-> SvcA
