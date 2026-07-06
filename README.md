@@ -10,6 +10,9 @@
 2. [Current State (As-Is): Fragmented Per-Product Identity](#2-current-state-as-is-fragmented-per-product-identity)
 3. [Requirements Traceability](#3-requirements-traceability)
 4. [Target Architecture: Centralized IAM Platform](#4-target-architecture-centralized-iam-platform)
+   - [4a. Authentication Flow](#4a-authentication-flow--establishing-identity)
+   - [4b. Authorization & Service Enforcement Flow](#4b-authorization--service-enforcement-flow--what-an-authenticated-identity-can-actually-do)
+   - [4c. Alternative Enforcement Pattern: Nginx + Auth Proxy](#4c-alternative-enforcement-pattern-nginx--auth-proxy)
 5. [Transitional / Intermediate Architecture](#5-transitional--intermediate-architecture)
 6. Organization → Tenant Model *(coming next)*
 7. Identity Classes & RBAC Design *(coming next)*
@@ -114,6 +117,10 @@ A quick map from capability asked-for to where it's addressed in this document.
 
 ## 4. Target Architecture: Centralized IAM Platform
 
+Split into two diagrams on purpose: authentication (establishing who someone is) and authorization/enforcement (what they can do once they're in) are different concerns with different failure modes, and conflating them in one diagram made the picture harder to read than it needed to be.
+
+### 4a. Authentication Flow — establishing identity
+
 ```mermaid
 graph TD
     Customer((Customer))
@@ -128,11 +135,45 @@ graph TD
         AdminUI["Internal Admin UI"]
     end
 
+    IdP["Keycloak Cluster\n(Identity Provider)"]
+
+    Customer --> WebA
+    Customer --> MobileB
+    Partner --> PartnerPortal
+    Employee --> AdminUI
+
+    WebA -.OIDC redirect, Auth Code + PKCE.-> IdP
+    MobileB -.OIDC redirect, Auth Code + PKCE.-> IdP
+    PartnerPortal -.OIDC / SAML federation.-> IdP
+    AdminUI -.OIDC + step-up MFA.-> IdP
+    APIConsumer -.Client Credentials, no browser.-> IdP
+
+    IdP -.tokens issued.-> WebA
+    IdP -.tokens issued.-> MobileB
+    IdP -.tokens issued.-> PartnerPortal
+    IdP -.tokens issued.-> AdminUI
+    IdP -.access token issued.-> APIConsumer
+```
+
+**Where the frontend sits, explicitly:** each product's client application (web SPA, mobile app, partner portal, internal admin UI) is itself an OIDC client. It never talks to the identity provider on the user's behalf silently — the user is redirected to the IdP to authenticate (Authorization Code + PKCE for browser/mobile clients, so the client never handles raw credentials), gets redirected back with an authorization code, and the client exchanges that for tokens. §9 and §12 walk through this exact sequence step by step.
+
+### 4b. Authorization & Service Enforcement Flow — what an authenticated identity can actually do
+
+```mermaid
+graph TD
+    subgraph Clients["Client Applications"]
+        WebA["Product A Web App"]
+        MobileB["Product B Mobile App"]
+        PartnerPortal["Partner Portal"]
+        AdminUI["Internal Admin UI"]
+        APIConsumer["3rd-Party API Consumer"]
+    end
+
     subgraph IdentityPlatform["Centralized Identity Platform"]
-        IdP["Keycloak Cluster\n(Identity Provider)"]
+        IdP["Keycloak Cluster"]
         Gateway["API Gateway"]
         Policy["OPA - Policy Engine"]
-        Vault["HashiCorp Vault\n(Secrets / Client Credentials)"]
+        Vault["HashiCorp Vault"]
     end
 
     subgraph Mesh["Service Mesh"]
@@ -142,27 +183,13 @@ graph TD
         SvcC["Product C Service"]
     end
 
-    Customer --> WebA
-    Customer --> MobileB
-    Partner --> PartnerPortal
-    Employee --> AdminUI
-    APIConsumer -.no browser, direct token request.-> IdP
-
-    WebA -.OIDC redirect, Auth Code + PKCE.-> IdP
-    MobileB -.OIDC redirect, Auth Code + PKCE.-> IdP
-    PartnerPortal -.OIDC / SAML federation.-> IdP
-    AdminUI -.OIDC + step-up MFA.-> IdP
-    IdP -.tokens back to client.-> WebA
-    IdP -.tokens back to client.-> MobileB
-    IdP -.tokens back to client.-> PartnerPortal
-    IdP -.tokens back to client.-> AdminUI
-
     WebA -->|Bearer access token| Gateway
     MobileB -->|Bearer access token| Gateway
     PartnerPortal -->|Bearer access token| Gateway
     AdminUI -->|Bearer access token| Gateway
     APIConsumer -->|Client Credentials token| Gateway
 
+    Gateway -->|validate JWT signature/exp against| IdP
     Gateway --> Policy
     Policy -->|allow/deny + scopes| Gateway
     Gateway --> SvcA
@@ -176,7 +203,28 @@ graph TD
     Vault -.-> IdP
 ```
 
-**Where the frontend sits, explicitly:** each product's client application (web SPA, mobile app, partner portal, internal admin UI) is itself an OIDC client. It never talks to the identity provider on the user's behalf silently — the user is redirected to the IdP to authenticate (Authorization Code + PKCE for browser/mobile clients, so the client never handles raw credentials), gets redirected back with an authorization code, and the client exchanges that for tokens. From then on, the client attaches the access token as a Bearer token on every call to the API Gateway. The gateway — not the frontend — is the enforcement boundary; a compromised or outdated frontend build can't bypass authorization because it never had the authority to grant itself access in the first place, only to carry a token the IdP issued. §9 and §12 walk through this exact sequence in detail.
+The gateway is the enforcement boundary, not the frontend — a compromised or outdated client build can't bypass authorization because it never had the authority to grant itself access, only to carry a token the IdP issued and the gateway independently re-validates.
+
+### 4c. Alternative Enforcement Pattern: Nginx + Auth Proxy
+
+The API Gateway + OPA pattern above is the right fit for API traffic across many products that need centralized, fine-grained policy. But not every app in the portfolio needs that much machinery — a simple internal tool, a legacy web app mid-migration (see §5), or a product that's mostly server-rendered HTML rather than an API consumer, is often better served by a lighter-weight pattern: an authenticating reverse proxy in front of the app itself.
+
+```mermaid
+graph TD
+    Browser((Browser))
+    Nginx["Nginx\n(auth_request module)"]
+    AuthProxy["oauth2-proxy\n(session validation)"]
+    IdP["Keycloak"]
+    App["Legacy / Simple Web App\n(no OIDC code of its own)"]
+
+    Browser --> Nginx
+    Nginx -->|auth_request subrequest| AuthProxy
+    AuthProxy -.validates session / token.-> IdP
+    AuthProxy -->|200 = allow, 401 = deny| Nginx
+    Nginx -->|proxy_pass, only if authorized| App
+```
+
+**How this differs from the Gateway pattern:** `oauth2-proxy` (or an equivalent auth sidecar) sits beside Nginx and handles the entire OIDC dance on the app's behalf — the app itself never sees a token or writes any auth code, it just trusts that Nginx wouldn't have proxied the request through if `auth_request` hadn't returned 200. This is the right tool when you want to **retrofit** identity-platform coverage onto an app you don't want to (or can't easily) modify — which is exactly the situation for several products during the migration window described in §5. It's not a replacement for the API Gateway pattern for genuine API traffic; it's a lower-effort on-ramp for apps that are mostly UI, not API surface.
 
 **Key properties of the target state:**
 - **One identity, every product.** A customer, employee, or partner authenticates once against the central IdP and gets scoped access across whichever products their role/tenant grants.
